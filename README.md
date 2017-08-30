@@ -74,4 +74,5 @@ This will not make any changes to `public_html`.
 
 ## License
 
-[MIT](https://github.com/jaketreacher/vestawphelper/blob/master/LICENSE.md)
+Copyright (c) Jake Treacher. All rights reserved.  
+Licensed under the [MIT](https://github.com/jaketreacher/vestawphelper/blob/master/LICENSE.txt) License.  
