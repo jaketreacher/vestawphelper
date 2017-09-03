@@ -256,7 +256,7 @@ mv /tmp/wordpress public_html
 echo "Configuring wp-config.php"
 cd public_html
 cp wp-config-sample.php wp-config.php
-replace_key     "DB_NAME"           "${user}_${prefix}"
+replace_key     "DB_NAME"           "${user}_${website}"
 replace_key     "DB_USER"           "${user}_${prefix}"
 replace_key     "DB_PASSWORD"       "${password}"
 insert_after    ".*DB_COLLATE.*"    "define('FS_METHOD', 'direct');"
