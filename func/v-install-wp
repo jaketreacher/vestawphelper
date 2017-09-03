@@ -1,0 +1,277 @@
+#!/bin/bash
+
+#----------------------------------------------------------#
+#                         Help                             #
+#----------------------------------------------------------#
+
+function show_help()
+{
+    echo "usage: sudo $(basename $0) WEBSITE [--no-backup] [--help]"
+    echo
+    echo "Vesta WP Helper: Installer"
+    echo
+    echo "positional arguments:"
+    printf "  %-20s  %s\n" "WEBSITE" "The site you want to install WordPress."
+    echo
+    echo "optional arguments:"
+    printf "  %-20s  %s\n"  "--no-backup" "Delete public_html rather than making a backup."
+    printf "  %-20s  %s\n"  "--help" "Display this message."
+}
+
+#----------------------------------------------------------#
+#                      Functions                           #
+#----------------------------------------------------------#
+
+function get_user()
+{
+    # ----------
+    # Get the name of the user that owns the website
+    # Args:
+    #     $1: website name
+    #
+    # Return:
+    #     ${@: -1}: user
+    #
+    # Exit:
+    #     Website not found.
+    # ----------
+    local website=$1
+    local list=($(ls $VESTA/data/users))
+
+    local user
+    for user in ${list[@]}; do
+        websites=($(grep -oP "DOMAIN='\K[\w\.-]*" $VESTA/data/users/$user/web.conf))
+        if value_in_array $website ${websites[@]}; then
+            eval ${@: -1}="$user"
+            return 0
+        fi
+    done
+
+    echo "${website} not found."
+    exit 1
+}
+
+function get_prefix()
+{
+    # ----------
+    # Get an unused prefix for the database name
+    # Args:
+    #     $1: user
+    #
+    # Return:
+    #     ${@: -1}: prefix
+    # ----------
+    local user=$1
+    local used=($(cat $VESTA/data/users/${user}/db.conf | grep -oP "DB='\K\w*" | sed "s/${user}_//" | xargs))
+
+    while true; do
+        random_string 4 prefix
+        if ! value_in_array $prefix ${used[@]}; then
+            break;
+        fi
+    done
+
+    eval ${@: -1}="$prefix"
+}
+
+function replace_key()
+{
+    # ----------
+    # Replace the value of a key in wp-config.php
+    # Args:
+    #     $1: key
+    #     $2: new value
+    # ----------
+    local key=$1
+    local value=$2
+    local doc="wp-config.php"
+
+    sed -i "s/.*${key}.*/define('${key}', '${value}');/" ${doc}
+}
+
+
+function replace_prefix()
+{
+    # ----------
+    # Replace the database prefix in wp-config.php
+    # Args:
+    #     $1: new value
+    # ----------
+    local value=$1
+    local doc="wp-config.php"
+
+    sed -i "s/.*table_prefix.*/\$table_prefix  = 'wp_${value}_';/" ${doc}
+}
+
+function insert_after()
+{
+    # ----------
+    # Add content after a specific line in wp-config.php
+    # Args:
+    #     $1: pattern - the line to match
+    #     $2: the value to insert
+    # ----------
+    local pattern=$1
+    local value=$2
+    local doc="wp-config.php"
+    local sections
+    mapfile -t sections < <(grep -P "${pattern}" "${doc}")
+
+    local section=${sections[0]}
+
+    # Only add the value if it doesn't already exist
+    if ! grep -q "${value}" "${doc}"; then
+        sed -i "s/${section}/${section}\n${value}/" ${doc}
+    fi
+}
+
+function random_string()
+{
+    # ----------
+    # Generate a random string. Matrix consits of 0-9 A-Z a-z.
+    # Args:
+    #     $1: length
+    #
+    # Return:
+    #     ${@: -1}: random string
+    # ----------
+    local matrix='0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz'
+    local length="$1"
+    local idx=1
+    while [ $idx -le $length ]; do
+        local pass="$pass${matrix:$(($RANDOM%${#matrix})):1}"
+        let idx+=1
+    done
+
+    eval ${@: -1}="$pass"
+}
+
+function value_in_array()
+{
+    # ----------
+    # Check if a value is present in an array
+    # Args:
+    #     $1: value
+    #     $2+: array values
+    #
+    # Return:
+    #     0 if found, 1 if not
+    # ----------
+    local value=$1; shift
+
+    for item; do
+        if [[ $item == $value ]]; then
+            return 0
+        fi
+    done
+    return 1
+}
+
+
+#----------------------------------------------------------#
+#                 Variables & Verifications                #
+#----------------------------------------------------------#
+
+# Help requested
+if value_in_array "--help" "$@"; then show_help; exit; fi
+
+# Vesta
+if [ -z $VESTA ]; then VESTA=/usr/local/vesta; fi
+if [ ! -e $VESTA ]; then echo "Vesta not installed."; exit; fi
+
+# MySQL
+if [ ! -e '/usr/bin/mysql' ]; then echo "MySQL not installed."; exit; fi
+
+# curl
+if [ ! -e '/usr/bin/curl' ]; then echo "Curl not installed."; exit; fi
+
+# sudo
+if [ $(whoami) != "root" ]; then echo "Permission denied."; exit; fi
+
+# website arg specified
+if [ -z $1 ]; then echo "Website not specified."; exit; fi
+
+# setup variables
+website=$1
+get_user $website result  && user=$result
+random_string 4 result   && prefix=$result
+random_string 10 result   && password=$result
+
+# Ensure max length not exceeded
+tmp="${user}_${website}"
+flag=false
+if [ ${#tmp} -gt 64 ]; then
+    echo "Database name too long."
+    echo "${tmp} (${#tmp} > 64)"
+    flag=true
+fi
+
+tmp="${user}_${prefix}"
+if [ ${#tmp} -gt 16 ]; then
+    echo "Username too long."
+    echo "${tmp} (${#tmp} > 16)"
+    flag=true
+fi
+
+if $flag; then exit; fi
+unset flag
+unset tmp
+
+#----------------------------------------------------------#
+#                       Action                             #
+#----------------------------------------------------------#
+
+# Download WordPress
+cd /tmp
+if [ -e 'latest.tar.gz' ]; then
+    rm -rf latest.tar.gz
+fi
+echo "Downloading Wordpress"
+curl -O https://wordpress.org/latest.tar.gz
+
+# Extract WordPress
+if [ -e 'wordpress' ]; then
+    rm -rf wordpress
+fi
+echo "Extracting files"
+tar xzf latest.tar.gz
+
+# Create backup
+cd /home/$user/web/$website
+if [ "$2" == "--no-backup" ]; then
+    echo "'--no-backup' specified: deleting public_html"
+    rm -rf public_html
+else
+    if [ -e public_html ]; then
+        echo "Creating public_html backup"
+        mv public_html public_html_$(date +%s)
+    fi
+fi
+
+# Move wordpress
+echo "Moving files"
+mv /tmp/wordpress public_html
+
+# Configure wp-config.php
+echo "Configuring wp-config.php"
+cd public_html
+cp wp-config-sample.php wp-config.php
+replace_key     "DB_NAME"           "${user}_${prefix}"
+replace_key     "DB_USER"           "${user}_${prefix}"
+replace_key     "DB_PASSWORD"       "${password}"
+insert_after    ".*DB_COLLATE.*"    "define('FS_METHOD', 'direct');"
+replace_prefix  "$prefix"
+
+# Configure ownership
+echo "Configuring permissions"
+chown -R ${user}:${user} .
+find . -type d -exec chmod 755 {} \;
+find . -type f -exec chmod 644 {} \;
+
+# Create new database in Vesta
+# v-add-database USER DATABASE DBUSER DBPASS
+echo "Creating new database"
+/bin/bash $VESTA/bin/v-add-database $user $website $prefix $password
+
+echo "Done!"
+exit
